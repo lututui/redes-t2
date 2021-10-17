@@ -41,6 +41,9 @@ class Servidor:
         elif id_conexao in self.conexoes:
             # Passa para a conexão adequada se ela já estiver estabelecida
             self.conexoes[id_conexao]._rdt_rcv(seq_no, ack_no, flags, payload)
+
+            if (flags & FLAGS_FIN) == FLAGS_FIN:
+                del self.conexoes[id_conexao]
         else:
             print('%s:%d -> %s:%d (pacote associado a conexão desconhecida)' %
                   (src_addr, src_port, dst_addr, dst_port))
@@ -65,8 +68,13 @@ class Conexao:
 
             self.callback(self, payload)
 
-            seg = make_header(self.id_conexao[3], self.id_conexao[1], self.seq_no, self.ack_no, FLAGS_ACK)
-            self.servidor.rede.enviar(fix_checksum(seg, self.id_conexao[0], self.id_conexao[2]), self.id_conexao[0])
+            self.servidor.rede.enviar(self._mk_header(self.seq_no, self.ack_no, b'', FLAGS_ACK), self.id_conexao[0])
+        elif (flags & FLAGS_FIN) == FLAGS_FIN:
+            self.ack_no += 1
+
+            self.callback(self, b'')
+
+            self.servidor.rede.enviar(self._mk_header(self.seq_no, self.ack_no, b'', FLAGS_ACK), self.id_conexao[0])
 
     # Os métodos abaixo fazem parte da API
 
@@ -101,5 +109,7 @@ class Conexao:
         """
         Usado pela camada de aplicação para fechar a conexão
         """
-        # TODO: implemente aqui o fechamento de conexão
-        pass
+        self.servidor.rede.enviar(
+            self._mk_header(self.seq_no + 1, self.ack_no, b'', FLAGS_ACK | FLAGS_FIN),
+            self.id_conexao[2]
+        )
