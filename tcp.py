@@ -1,5 +1,5 @@
 import asyncio
-from random import randint
+import random
 
 from tcputils import *
 
@@ -34,11 +34,7 @@ class Servidor:
 
         if (flags & FLAGS_SYN) == FLAGS_SYN:
             # A flag SYN estar setada significa que é um cliente tentando estabelecer uma conexão nova
-
-            server_seq_no = randint(0, 0xffff)
-            server_ack_no = seq_no + 1
-
-            conexao = self.conexoes[id_conexao] = Conexao(self, id_conexao, server_seq_no, server_ack_no)
+            conexao = self.conexoes[id_conexao] = Conexao(self, id_conexao, random.randint(0, 0xffff), seq_no + 1)
 
             if self.callback:
                 self.callback(conexao)
@@ -55,58 +51,22 @@ class Conexao:
         self.servidor = servidor
         self.id_conexao = id_conexao
         self.callback = None
+
         self.seq_no = seq_no
         self.ack_no = ack_no
 
-        handshake_header = make_header(
-            self.id_conexao[3],
-            self.id_conexao[1],
-            self.seq_no,
-            self.ack_no,
-            FLAGS_SYN | FLAGS_ACK
-        )
-        self.servidor.rede.enviar(
-            fix_checksum(handshake_header, self.id_conexao[2], self.id_conexao[0]),
-            self.id_conexao[0]
-        )
-        self.seq_no += 1
-
-        self.servidor.callback(self)
-
-        # um timer pode ser criado assim; esta linha é só um exemplo e pode ser removida
-        # self.timer = asyncio.get_event_loop().call_later(1, self._exemplo_timer)
-
-        # é possível cancelar o timer chamando esse método; esta linha é só um exemplo e pode ser removida
-        # self.timer.cancel()
-
-    def _exemplo_timer(self):
-        # Esta função é só um exemplo e pode ser removida
-        print('Este é um exemplo de como fazer um timer')
+        self.servidor.rede.enviar(self._mk_header(seq_no, ack_no, b'', FLAGS_SYN | FLAGS_ACK), self.id_conexao[0])
 
     def _rdt_rcv(self, seq_no, ack_no, flags, payload):
-        print(f'expected ack: {self.ack_no}, got seq: {seq_no}')
-        if self.ack_no == seq_no:
-            print("RECEIVED CORRECT")
-            self.callback(self.id_conexao, payload)
+        # print('recebido payload: %r' % payload)
+
+        if seq_no == self.ack_no and payload:
             self.ack_no += len(payload)
 
-            segmento = fix_checksum(
-                make_header(
-                    self.id_conexao[3],
-                    self.id_conexao[1],
-                    ack_no,
-                    self.ack_no,
-                    FLAGS_ACK
-                ),
-                self.id_conexao[2],
-                self.id_conexao[0]
-            )
+            self.callback(self, payload)
 
-            self.servidor.rede.enviar(segmento, self.id_conexao[0])
-
-            print(f'recebido payload len: {len(payload)}, seq_no: {seq_no}, ack_no: {ack_no}')
-            print('%r' % payload)
-
+            seg = make_header(self.id_conexao[3], self.id_conexao[1], self.seq_no, self.ack_no, FLAGS_ACK)
+            self.servidor.rede.enviar(fix_checksum(seg, self.id_conexao[0], self.id_conexao[2]), self.id_conexao[0])
 
     # Os métodos abaixo fazem parte da API
 
@@ -117,11 +77,25 @@ class Conexao:
         """
         self.callback = callback
 
+    def _mk_header(self, seq_no, ack_no, dados, flags):
+        return fix_checksum(
+            make_header(self.id_conexao[3], self.id_conexao[1], seq_no, ack_no, flags) + dados,
+            self.id_conexao[2],
+            self.id_conexao[0]
+        )
+
     def enviar(self, dados):
         """
         Usado pela camada de aplicação para enviar dados
         """
-        pass
+
+        for i in range(int(len(dados) / MSS)):
+            self.seq_no += MSS
+
+            self.servidor.rede.enviar(
+                self._mk_header(self.seq_no - MSS + 1, self.ack_no, dados[i * MSS:(i + 1) * MSS], FLAGS_ACK),
+                self.id_conexao[0]
+            )
 
     def fechar(self):
         """
