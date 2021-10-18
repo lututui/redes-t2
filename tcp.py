@@ -1,5 +1,6 @@
 import asyncio
 import random
+import time
 
 from tcputils import *
 
@@ -62,6 +63,10 @@ class Conexao:
         self.timer = None
         self.sent = []
 
+        self.timeout = 1.0
+        self.dev_rtt = None
+        self.estimated_rtt = None
+
         self.servidor.rede.enviar(self._mk_header(seq_no, ack_no, b'', FLAGS_SYN | FLAGS_ACK), self.id_conexao[0])
 
     def _rdt_rcv(self, seq_no, ack_no, flags, payload):
@@ -71,11 +76,12 @@ class Conexao:
             self.seq_no_b = ack_no
 
             if self.sent:
+                self._calcular_timeout()
                 self.timer.cancel()
                 self.sent.pop(0)
 
                 if self.sent:
-                    self.timer = asyncio.get_event_loop().call_later(1.0, self._timer)
+                    self.timer = asyncio.get_event_loop().call_later(self.timeout, self._timer)
 
         if seq_no == self.ack_no and payload:
             self.ack_no += len(payload)
@@ -106,9 +112,28 @@ class Conexao:
             self.id_conexao[0]
         )
 
+    def _calcular_timeout(self):
+        if "send_time" not in self.sent[0]:
+            return
+
+        sample_rtt = time.time() - self.sent[0]["send_time"]
+
+        if not self.estimated_rtt:
+            self.estimated_rtt = sample_rtt
+            self.dev_rtt = sample_rtt / 2.0
+        else:
+            alfa, beta = 0.125, 0.25
+            self.estimated_rtt = (1 - alfa) * self.estimated_rtt + alfa * sample_rtt
+            self.dev_rtt = (1 - beta) * self.dev_rtt + beta * abs(sample_rtt - self.estimated_rtt)
+
+        self.timeout = self.estimated_rtt + 4 * self.dev_rtt
+
     def _timer(self):
         if self.sent:
-            self.servidor.rede.enviar(self.sent[0], self.id_conexao[0])
+            self.servidor.rede.enviar(self.sent[0]["segmento"], self.id_conexao[0])
+
+            if "send_time" in self.sent[0]:
+                del self.sent[0]["send_time"]
 
     def enviar(self, dados):
         """
@@ -123,8 +148,8 @@ class Conexao:
 
             self.servidor.rede.enviar(seg, self.id_conexao[0])
 
-            self.timer = asyncio.get_event_loop().call_later(1.0, self._timer)
-            self.sent.append(seg)
+            self.timer = asyncio.get_event_loop().call_later(self.timeout, self._timer)
+            self.sent.append({"segmento": seg, "send_time": time.time()})
 
     def fechar(self):
         """
