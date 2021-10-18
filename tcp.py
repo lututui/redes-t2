@@ -58,10 +58,24 @@ class Conexao:
         self.seq_no = seq_no
         self.ack_no = ack_no
 
+        self.seq_no_b = seq_no
+        self.timer = None
+        self.sent = []
+
         self.servidor.rede.enviar(self._mk_header(seq_no, ack_no, b'', FLAGS_SYN | FLAGS_ACK), self.id_conexao[0])
 
     def _rdt_rcv(self, seq_no, ack_no, flags, payload):
         # print('recebido payload: %r' % payload)
+
+        if (flags & FLAGS_ACK) == FLAGS_ACK and ack_no > self.seq_no_b:
+            self.seq_no_b = ack_no
+
+            if self.sent:
+                self.timer.cancel()
+                self.sent.pop(0)
+
+                if self.sent:
+                    self.timer = asyncio.get_event_loop().call_later(1.0, self._timer)
 
         if seq_no == self.ack_no and payload:
             self.ack_no += len(payload)
@@ -92,6 +106,10 @@ class Conexao:
             self.id_conexao[0]
         )
 
+    def _timer(self):
+        if self.sent:
+            self.servidor.rede.enviar(self.sent[0], self.id_conexao[0])
+
     def enviar(self, dados):
         """
         Usado pela camada de aplicação para enviar dados
@@ -100,10 +118,13 @@ class Conexao:
         for i in range(int(len(dados) / MSS)):
             self.seq_no += MSS
 
-            self.servidor.rede.enviar(
-                self._mk_header(self.seq_no - MSS + 1, self.ack_no, dados[i * MSS:(i + 1) * MSS], FLAGS_ACK),
-                self.id_conexao[0]
-            )
+            payload = dados[i * MSS:(i + 1) * MSS]
+            seg = self._mk_header(self.seq_no - MSS + 1, self.ack_no, payload, FLAGS_ACK)
+
+            self.servidor.rede.enviar(seg, self.id_conexao[0])
+
+            self.timer = asyncio.get_event_loop().call_later(1.0, self._timer)
+            self.sent.append(seg)
 
     def fechar(self):
         """
