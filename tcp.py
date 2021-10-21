@@ -68,6 +68,7 @@ class Conexao:
         self.estimated_rtt = None
 
         self.servidor.rede.enviar(self._mk_header(seq_no, ack_no, b'', FLAGS_SYN | FLAGS_ACK), self.id_conexao[0])
+        self.seq_no += 1
 
     def _rdt_rcv(self, seq_no, ack_no, flags, payload):
         # print('recebido payload: %r' % payload)
@@ -140,13 +141,12 @@ class Conexao:
         Usado pela camada de aplicação para enviar dados
         """
 
-        for i in range(int(len(dados) / MSS)):
-            self.seq_no += MSS
-
+        for i in range(len(dados) // MSS):
             payload = dados[i * MSS:(i + 1) * MSS]
-            seg = self._mk_header(self.seq_no - MSS + 1, self.ack_no, payload, FLAGS_ACK)
 
+            seg = self._mk_header(self.seq_no, self.ack_no, payload, FLAGS_ACK)
             self.servidor.rede.enviar(seg, self.id_conexao[0])
+            self.seq_no += len(payload)
 
             self.timer = asyncio.get_event_loop().call_later(self.timeout, self._timer)
             self.sent.append({"segmento": seg, "send_time": time.time()})
@@ -156,6 +156,6 @@ class Conexao:
         Usado pela camada de aplicação para fechar a conexão
         """
         self.servidor.rede.enviar(
-            self._mk_header(self.seq_no + 1, self.ack_no, b'', FLAGS_ACK | FLAGS_FIN),
+            self._mk_header(self.seq_no, self.ack_no, b'', FLAGS_ACK | FLAGS_FIN),
             self.id_conexao[2]
         )
