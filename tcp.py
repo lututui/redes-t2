@@ -67,8 +67,21 @@ class Conexao:
         self.dev_rtt = None
         self.estimated_rtt = None
 
+        self.janela = 1
+        self.seq_janela = None
+        self.fila_payload = b''
+
         self.servidor.rede.enviar(self._mk_header(seq_no, ack_no, b'', FLAGS_SYN | FLAGS_ACK), self.id_conexao[0])
         self.seq_no += 1
+
+    def _start_timer(self):
+        self._stop_timer()
+        self.timer = asyncio.get_event_loop().call_later(self.timeout, self._timer)
+
+    def _stop_timer(self):
+        if self.timer:
+            self.timer.cancel()
+            self.timer = None
 
     def _rdt_rcv(self, seq_no, ack_no, flags, payload):
         # print('recebido payload: %r' % payload)
@@ -78,11 +91,16 @@ class Conexao:
 
             if self.sent:
                 self._calcular_timeout()
-                self.timer.cancel()
                 self.sent.pop(0)
 
                 if self.sent:
-                    self.timer = asyncio.get_event_loop().call_later(self.timeout, self._timer)
+                    self._start_timer()
+                else:
+                    self._stop_timer()
+
+        if self.seq_janela == ack_no:
+            self.janela += 1
+            self.enviar(b'')
 
         if seq_no == self.ack_no and payload:
             self.ack_no += len(payload)
@@ -130,8 +148,13 @@ class Conexao:
         self.timeout = self.estimated_rtt + 4 * self.dev_rtt
 
     def _timer(self):
+        self._start_timer()
+
         if self.sent:
             self.servidor.rede.enviar(self.sent[0]["segmento"], self.id_conexao[0])
+
+            print(f"cortando janela de {self.janela} para {self.janela // 2}")
+            self.janela //= 2
 
             if "send_time" in self.sent[0]:
                 del self.sent[0]["send_time"]
@@ -140,16 +163,31 @@ class Conexao:
         """
         Usado pela camada de aplicação para enviar dados
         """
+        self.fila_payload += dados
+        print(f'tamanho fila dados (per MSS): {len(self.fila_payload) // MSS}, janela: {self.janela}')
 
-        for i in range(len(dados) // MSS):
-            payload = dados[i * MSS:(i + 1) * MSS]
+        if not self.fila_payload:
+            return
+
+        payload_para_envio = self.fila_payload[:MSS * self.janela]
+        self.fila_payload = self.fila_payload[MSS * self.janela:]
+
+        self.seq_janela = self.seq_no + len(payload_para_envio)
+
+        print(f'tamanho payload para envio (per MSS): {len(payload_para_envio) // MSS}, janela: {self.janela}')
+
+        for i in range(len(payload_para_envio) // MSS):
+            payload = payload_para_envio[i * MSS:(i + 1) * MSS]
 
             seg = self._mk_header(self.seq_no, self.ack_no, payload, FLAGS_ACK)
             self.servidor.rede.enviar(seg, self.id_conexao[0])
             self.seq_no += len(payload)
 
-            self.timer = asyncio.get_event_loop().call_later(self.timeout, self._timer)
             self.sent.append({"segmento": seg, "send_time": time.time()})
+            if i == 0:
+                self._start_timer()
+                print(self.timeout)
+
 
     def fechar(self):
         """
